@@ -1,0 +1,152 @@
+---
+
+- hosts:            all
+  become:           yes
+  tasks:
+  - name:           Install epel-release
+    yum_repository:
+      name:         epel
+      description:  EPEL YUM repo
+      baseurl:      https://download.fedoraproject.org/pub/epel/$releasever/$basearch/
+      gpgcheck:     no
+  - name:           Install packages
+    yum:
+      name:
+        - nano
+        - openvpn
+        - iperf3
+        - policycoreutils-python
+      state:        present
+
+  - name:           Configure selinux
+    seport:
+      ports:        3876
+      proto:        udp
+      setype:       openvpn_port_t
+      state:        present
+
+- hosts:            vpn1
+  become:           yes
+  tasks:
+  - name:           Generate static key
+    shell:
+      cmd:          openvpn --genkey --secret /etc/openvpn/static.key
+  - name:           Fetch static key
+    fetch:
+      src:          /etc/openvpn/static.key
+      dest:         ./files/tmp/static.key
+      flat:         yes
+  - name:           configure openvpn
+    copy:
+      src:          ./files/server-tun.conf
+      dest:         /etc/openvpn/server-tun.conf
+    notify:         openvpn restart
+
+  handlers:
+    - name:         openvpn restart
+      service:
+        name:       openvpn@server-tun
+        state:      restarted
+        enabled:    yes
+
+- hosts:            vpn2
+  become:           yes
+  tasks:
+  - name:           Copy static key
+    copy:
+      src:          ./files/tmp/static.key
+      dest:         /etc/openvpn/static.key
+  - name:           configure openvpn
+    copy:
+      src:          ./files/client-tun.conf
+      dest:         /etc/openvpn/client-tun.conf
+    notify:         openvpn restart
+
+  handlers:
+    - name:         openvpn restart
+      service:
+        name:       openvpn@client-tun
+        state:      restarted
+        enabled:    yes
+
+
+- hosts:            vpn3
+  become:           yes
+  tasks:
+  - name:           Install easy-rsa
+    yum:
+      name:         easy-rsa
+      state:        present
+
+  - name:           Initialize PKI
+    shell:
+      cmd:          /usr/share/easy-rsa/3.0.7/easyrsa init-pki
+      chdir:        /etc/openvpn/
+    run_once:       true
+
+  - name:           Build the certificate authority
+    shell:
+      cmd:          echo 'rasvpn' | /usr/share/easy-rsa/3.0.7/easyrsa build-ca nopass
+      chdir:        /etc/openvpn/
+    run_once:       true
+
+  - name:           Generate a standalone keypair and request for server
+    shell:
+      cmd:          echo 'rasvpn' | /usr/share/easy-rsa/3.0.7/easyrsa gen-req server nopass
+      chdir:        /etc/openvpn/
+    run_once:       true
+  - name:           Sign a certificate request for server
+    shell:
+      cmd:          echo 'yes' | /usr/share/easy-rsa/3.0.7/easyrsa sign-req server server
+      chdir:        /etc/openvpn/
+    run_once:       true
+  - name:           Generates DH (Diffie-Hellman) parameters
+    shell:
+      cmd:          /usr/share/easy-rsa/3.0.7/easyrsa gen-dh
+      chdir:        /etc/openvpn/
+    run_once:       true
+  - name:           Generate a random key
+    shell:
+      cmd:          openvpn --genkey --secret ta.key
+      chdir:        /etc/openvpn/
+    run_once:       true
+  - name:           Generate a standalone keypair and request for client
+    shell:
+      cmd:          echo 'client' | /usr/share/easy-rsa/3.0.7/easyrsa gen-req client nopass
+      chdir:        /etc/openvpn/
+    run_once:       true
+  - name:           Sign a certificate request for client
+    shell:
+      cmd:          echo 'yes' | /usr/share/easy-rsa/3.0.7/easyrsa sign-req client client
+      chdir:        /etc/openvpn/
+    run_once:       true
+
+  - name:           Fetch ca.crt
+    fetch:
+      src:          /etc/openvpn/pki/ca.crt
+      dest:         ./files/wrk/
+      flat:         yes
+    run_once:       true
+  - name:           Fetch client.crt
+    fetch:
+      src:          /etc/openvpn/pki/issued/client.crt
+      dest:         ./files/wrk/
+      flat:         yes
+    run_once:       true
+  - name:           Fetch client.key
+    fetch:
+      src:          /etc/openvpn/pki/private/client.key
+      dest:         ./files/wrk/
+      flat:         yes
+    run_once:       true
+  - name:           Configure openvpn server RAS
+    copy:
+      src:          ./files/server-ras.conf
+      dest:         /etc/openvpn/server-ras.conf
+    notify:         openvpn-ras restart
+  handlers:
+  - name:           openvpn-ras restart
+    service:
+      name:         openvpn@server-ras
+      state:        restarted
+      enabled:      yes
